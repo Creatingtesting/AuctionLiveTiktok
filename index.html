@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SabTraderOnLive Gift Tracker</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #000 0%, #111 100%);
+            color: #fff;
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            overflow: hidden;
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        .minimum {
+            background: #ff0050;
+            color: #fff;
+            padding: 10px;
+            border-radius: 10px;
+            font-size: 18px;
+            font-weight: bold;
+            text-align: center;
+            margin-bottom: 20px;
+            animation: glow 2s infinite alternate;
+        }
+        @keyframes glow {
+            from { box-shadow: 0 0 5px #ff0050; }
+            to { box-shadow: 0 0 20px #ff0050; }
+        }
+        .total {
+            font-size: 24px;
+            font-weight: bold;
+            text-align: center;
+            color: #00ff88;
+            margin-bottom: 20px;
+        }
+        .connect-btn {
+            background: #ff0050;
+            color: #fff;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 20px;
+            font-size: 16px;
+            cursor: pointer;
+            margin: 0 auto 20px;
+            display: block;
+            transition: background 0.3s;
+        }
+        .connect-btn:hover { background: #cc0040; }
+        .connect-btn:disabled { background: #333; cursor: not-allowed; }
+        #log {
+            flex: 1;
+            overflow-y: auto;
+            padding: 10px;
+            border: 1px solid #333;
+            border-radius: 10px;
+            background: #1a1a1a;
+        }
+        .gift-entry {
+            display: flex;
+            justify-content: space-between;
+            padding: 8px;
+            margin-bottom: 5px;
+            background: #222;
+            border-radius: 5px;
+            animation: slideIn 0.5s ease-out;
+        }
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateX(-20px); }
+            to { opacity: 1; transform: translateX(0); }
+        }
+        .status {
+            text-align: center;
+            padding: 10px;
+            border-radius: 5px;
+            margin-bottom: 10px;
+        }
+        .status.connected { background: #00ff88; color: #000; }
+        .status.disconnected { background: #ff4444; color: #fff; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>SabTraderOnLive Auction Gifts</h1>
+        <div class="minimum">50 Minimum</div>
+        <div class="total">Total Donated: <span id="total-coins">0</span> Coins</div>
+        <button id="connect-btn" class="connect-btn">Connect to Live</button>
+        <div id="status" class="status disconnected">Disconnected - Start live to connect</div>
+    </div>
+    <div id="log"></div>
+
+    <script>
+        const USERNAME = 'sabtraderonlive'; // TikTok unique ID (without @)
+        const MINIMUM = 50; // Edit here if needed
+        const ws = new WebSocket(`wss://${window.location.host === 'localhost' ? 'localhost:8080' : 'your-backend-if-needed'}/ws`); // Placeholder; use direct WS below
+        let totalCoins = 0;
+        let isConnected = false;
+        const log = document.getElementById('log');
+        const totalEl = document.getElementById('total-coins');
+        const statusEl = document.getElementById('status');
+        const btn = document.getElementById('connect-btn');
+
+        // Simplified WebSocket connector to TikTok's Webcast (reverse-engineered; inspired by TikTok-Live-Connector)
+        // Note: This is a basic implementation. For production, host a Node.js proxy on Glitch/Replit and connect via WS.
+        // Direct browser WS to TikTok may be blocked by CORS; use a proxy if needed.
+        async function connectToLive() {
+            if (isConnected) return;
+            btn.disabled = true;
+            btn.textContent = 'Connecting...';
+            statusEl.textContent = 'Connecting...';
+            statusEl.className = 'status';
+
+            try {
+                // Fetch room ID first (unofficial API)
+                const roomRes = await fetch(`https://www.tiktok.com/api/room/info/?uniqueId=${USERNAME}`);
+                if (!roomRes.ok) throw new Error('Stream not live');
+                const roomData = await roomRes.json();
+                const roomId = roomData.data.roomId;
+
+                // WebSocket to TikTok Webcast push (basic handshake; extend for full events)
+                const wsUrl = `wss://webcast3-ws-intl.tiktok.com/webcast/room/${roomId}/push/?aid=1988&app_name=tiktok_web&device_platform=web_pc&room_id=${roomId}&user_unique_id=${USERNAME}&ts=${Date.now()}`;
+                const liveWs = new WebSocket(wsUrl);
+
+                liveWs.onopen = () => {
+                    // Send heartbeat/push subscription (simplified)
+                    liveWs.send(JSON.stringify({ "event": "subscribe", "params": { "gift": true } })); // Pseudo-payload
+                    isConnected = true;
+                    statusEl.textContent = 'Connected - Tracking Gifts!';
+                    statusEl.className = 'status connected';
+                    btn.textContent = 'Disconnect';
+                    btn.disabled = false;
+                };
+
+                liveWs.onmessage = (event) => {
+                    try {
+                        const data = JSON.parse(event.data);
+                        if (data.type === 'gift' || data.gift) { // Adapt to actual payload structure
+                            const donor = data.user?.nickname || 'Anonymous';
+                            const giftName = data.gift?.name || 'Gift';
+                            const coins = data.gift?.diamond_count || 1; // Coin cost
+                            const repeats = data.gift?.repeat_count || 1;
+                            const totalGiftCoins = coins * repeats;
+
+                            totalCoins += totalGiftCoins;
+                            totalEl.textContent = totalCoins;
+
+                            // Add to log
+                            const entry = document.createElement('div');
+                            entry.className = 'gift-entry';
+                            entry.innerHTML = `<span>${donor} sent ${giftName} x${repeats}</span><span>${totalGiftCoins} Coins</span>`;
+                            log.insertBefore(entry, log.firstChild);
+                            log.scrollTop = 0;
+
+                            // Check minimum
+                            if (totalCoins >= MINIMUM) {
+                                statusEl.innerHTML += ` <strong>(Eligible!)</strong>`;
+                            }
+                        }
+                    } catch (e) {
+                        console.error('Parse error:', e);
+                    }
+                };
+
+                liveWs.onclose = () => {
+                    disconnect();
+                };
+
+                liveWs.onerror = (err) => {
+                    throw new Error('Connection failed: ' + err);
+                };
+
+            } catch (error) {
+                statusEl.textContent = 'Error: ' + error.message + ' (Is the stream live?)';
+                statusEl.className = 'status disconnected';
+                btn.disabled = false;
+                btn.textContent = 'Retry Connect';
+            }
+        }
+
+        function disconnect() {
+            isConnected = false;
+            statusEl.textContent = 'Disconnected';
+            statusEl.className = 'status disconnected';
+            btn.textContent = 'Connect to Live';
+            btn.disabled = false;
+            // Reset if needed: totalCoins = 0; totalEl.textContent = '0';
+        }
+
+        btn.addEventListener('click', () => isConnected ? disconnect() : connectToLive());
+
+        // Auto-reconnect on page load if live (optional)
+        window.addEventListener('load', () => connectToLive());
+    </script>
+</body>
+</html>
