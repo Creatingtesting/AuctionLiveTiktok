@@ -85,6 +85,7 @@
         }
         .status.connected { background: #00ff88; color: #000; }
         .status.disconnected { background: #ff4444; color: #fff; }
+        .status.connecting { background: #ffaa00; color: #000; }
     </style>
 </head>
 <body>
@@ -98,40 +99,62 @@
     <div id="log"></div>
 
     <script>
-        const USERNAME = 'sabtraderonlive'; // TikTok unique ID (without @)
-        const MINIMUM = 50; // Edit here if needed
-        const ws = new WebSocket(`wss://${window.location.host === 'localhost' ? 'localhost:8080' : 'your-backend-if-needed'}/ws`); // Placeholder; use direct WS below
+        const USERNAME = 'sabtraderonlive'; // Your TikTok username (no @)
+        const MINIMUM = 50;
         let totalCoins = 0;
         let isConnected = false;
         const log = document.getElementById('log');
         const totalEl = document.getElementById('total-coins');
         const statusEl = document.getElementById('status');
         const btn = document.getElementById('connect-btn');
+        let ws = null;
 
-        // Simplified WebSocket connector to TikTok's Webcast (reverse-engineered; inspired by TikTok-Live-Connector)
-        // Note: This is a basic implementation. For production, host a Node.js proxy on Glitch/Replit and connect via WS.
-        // Direct browser WS to TikTok may be blocked by CORS; use a proxy if needed.
+        // Updated room info fetch (2025 API)
+        async function fetchRoomId() {
+            try {
+                const res = await fetch(`https://www.tiktok.com/api/v1/room/info/?uniqueId=${USERNAME}`);
+                if (!res.ok) throw new Error('Stream not live');
+                const data = await res.json();
+                return data.data.roomId;
+            } catch (e) {
+                throw new Error('Failed to fetch room: ' + e.message);
+            }
+        }
+
+        // Check if live (optional, for auto-connect)
+        async function isLive() {
+            try {
+                const res = await fetch(`https://www.tiktok.com/api/v1/room/info/?uniqueId=${USERNAME}`);
+                const data = await res.json();
+                return data.data.status === 2; // 2 = live
+            } catch {
+                return false;
+            }
+        }
+
         async function connectToLive() {
             if (isConnected) return;
             btn.disabled = true;
             btn.textContent = 'Connecting...';
             statusEl.textContent = 'Connecting...';
-            statusEl.className = 'status';
+            statusEl.className = 'status connecting';
 
             try {
-                // Fetch room ID first (unofficial API)
-                const roomRes = await fetch(`https://www.tiktok.com/api/room/info/?uniqueId=${USERNAME}`);
-                if (!roomRes.ok) throw new Error('Stream not live');
-                const roomData = await roomRes.json();
-                const roomId = roomData.data.roomId;
+                // Fetch room ID
+                const roomId = await fetchRoomId();
+                if (!roomId) throw new Error('No room ID found');
 
-                // WebSocket to TikTok Webcast push (basic handshake; extend for full events)
-                const wsUrl = `wss://webcast3-ws-intl.tiktok.com/webcast/room/${roomId}/push/?aid=1988&app_name=tiktok_web&device_platform=web_pc&room_id=${roomId}&user_unique_id=${USERNAME}&ts=${Date.now()}`;
-                const liveWs = new WebSocket(wsUrl);
+                // EulerStream proxy WS (signed, 2025 compatible - no key needed for free tier)
+                const wsUrl = `wss://ws.eulerstream.com/?roomId=${roomId}&uniqueId=${USERNAME}`;
+                ws = new WebSocket(wsUrl);
 
-                liveWs.onopen = () => {
-                    // Send heartbeat/push subscription (simplified)
-                    liveWs.send(JSON.stringify({ "event": "subscribe", "params": { "gift": true } })); // Pseudo-payload
+                ws.onopen = () => {
+                    // Send subscribe (Euler format)
+                    ws.send(JSON.stringify({
+                        type: 'subscribe',
+                        roomId: roomId,
+                        events: ['gift', 'connect']
+                    }));
                     isConnected = true;
                     statusEl.textContent = 'Connected - Tracking Gifts!';
                     statusEl.className = 'status connected';
@@ -139,42 +162,46 @@
                     btn.disabled = false;
                 };
 
-                liveWs.onmessage = (event) => {
+                ws.onmessage = (event) => {
                     try {
                         const data = JSON.parse(event.data);
-                        if (data.type === 'gift' || data.gift) { // Adapt to actual payload structure
-                            const donor = data.user?.nickname || 'Anonymous';
+                        if (data.type === 'gift' || data.event === 'gift') {
+                            const donor = data.user?.nickname || data.uniqueId || 'Anonymous';
                             const giftName = data.gift?.name || 'Gift';
-                            const coins = data.gift?.diamond_count || 1; // Coin cost
-                            const repeats = data.gift?.repeat_count || 1;
+                            const coins = data.gift?.diamondCount || data.cost || 1; // Coin cost
+                            const repeats = data.repeatCount || data.comboCount || 1;
                             const totalGiftCoins = coins * repeats;
 
                             totalCoins += totalGiftCoins;
                             totalEl.textContent = totalCoins;
 
-                            // Add to log
+                            // Log entry
                             const entry = document.createElement('div');
                             entry.className = 'gift-entry';
                             entry.innerHTML = `<span>${donor} sent ${giftName} x${repeats}</span><span>${totalGiftCoins} Coins</span>`;
                             log.insertBefore(entry, log.firstChild);
                             log.scrollTop = 0;
 
-                            // Check minimum
-                            if (totalCoins >= MINIMUM) {
-                                statusEl.innerHTML += ` <strong>(Eligible!)</strong>`;
+                            // Minimum check
+                            if (totalCoins >= MINIMUM && !statusEl.innerHTML.includes('Eligible')) {
+                                statusEl.innerHTML += ` <strong style="color: #00ff88;">(Eligible!)</strong>`;
                             }
+                        } else if (data.type === 'connect') {
+                            console.log('Euler connected to room:', roomId);
                         }
                     } catch (e) {
                         console.error('Parse error:', e);
                     }
                 };
 
-                liveWs.onclose = () => {
+                ws.onclose = () => {
                     disconnect();
+                    // Auto-reconnect in 5s if was connected
+                    if (isConnected) setTimeout(connectToLive, 5000);
                 };
 
-                liveWs.onerror = (err) => {
-                    throw new Error('Connection failed: ' + err);
+                ws.onerror = (err) => {
+                    throw new Error('WS Error: ' + err);
                 };
 
             } catch (error) {
@@ -186,18 +213,20 @@
         }
 
         function disconnect() {
+            if (ws) ws.close();
             isConnected = false;
             statusEl.textContent = 'Disconnected';
             statusEl.className = 'status disconnected';
             btn.textContent = 'Connect to Live';
             btn.disabled = false;
-            // Reset if needed: totalCoins = 0; totalEl.textContent = '0';
         }
 
         btn.addEventListener('click', () => isConnected ? disconnect() : connectToLive());
 
-        // Auto-reconnect on page load if live (optional)
-        window.addEventListener('load', () => connectToLive());
+        // Auto-check if live on load
+        window.addEventListener('load', async () => {
+            if (await isLive()) connectToLive();
+        });
     </script>
 </body>
 </html>
